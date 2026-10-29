@@ -86,13 +86,30 @@ Copy the sample environment file with placeholder values:
 ```bash
 cp .env.example .env
 ```
-Default configuration values in `.env`:
+
+#### Option A: Using SQLite (Default, Zero-Setup)
 ```env
 PORT=3000
 NODE_ENV=development
 DATABASE_PATH=./data/messaging.db
 LOG_LEVEL=info
-WORKER_ENABLED=true
+```
+
+#### Option B: Connecting to Local PostgreSQL
+To connect to your local PostgreSQL database, either specify `DATABASE_URL`:
+```env
+DATABASE_URL=postgresql://postgres:your_password@localhost:5432/messaging_db
+```
+Or specify individual parameters:
+```env
+DB_CLIENT=postgres
+PGHOST=localhost
+PGPORT=5432
+PGUSER=postgres
+PGPASSWORD=your_password
+PGDATABASE=messaging_db
+```
+*(Note: Create the database in PostgreSQL if it doesn't already exist: `CREATE DATABASE messaging_db;`)*
 WORKER_CONCURRENCY=2
 WORKER_POLL_INTERVAL_MS=500
 WORKER_MAX_RETRIES=3
