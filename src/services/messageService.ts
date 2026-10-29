@@ -43,11 +43,11 @@ export class MessageService {
   /**
    * Creates a new message with QUEUED status and persists it.
    */
-  public createMessage(
+  public async createMessage(
     input: CreateMessageInput,
     authenticatedTenantId?: string,
     db?: DatabaseSync
-  ): MessageDTO {
+  ): Promise<MessageDTO> {
     // If an authenticated tenant is specified via x-tenant-id header, enforce match
     if (authenticatedTenantId && authenticatedTenantId !== input.tenantId) {
       throw new ForbiddenError(
@@ -76,7 +76,7 @@ export class MessageService {
       version: 1,
     };
 
-    messageRepository.create(record, db);
+    await messageRepository.create(record, db);
     metricsService.recordMessageCreated();
 
     // Enqueue message dispatch job to worker queue for asynchronous processing
@@ -97,8 +97,8 @@ export class MessageService {
   /**
    * Retrieves message details and webhook event history with tenant isolation.
    */
-  public getMessage(messageId: string, tenantId?: string, db?: DatabaseSync): MessageDTO {
-    const record = messageRepository.findById(messageId, db);
+  public async getMessage(messageId: string, tenantId?: string, db?: DatabaseSync): Promise<MessageDTO> {
+    const record = await messageRepository.findById(messageId, db);
     if (!record) {
       throw new NotFoundError(`Message with ID '${messageId}' was not found`);
     }
@@ -108,7 +108,7 @@ export class MessageService {
       throw new NotFoundError(`Message with ID '${messageId}' was not found`);
     }
 
-    const events = webhookEventRepository.findByMessageId(messageId, db);
+    const events = await webhookEventRepository.findByMessageId(messageId, db);
     const history: WebhookEventDTO[] = events.map((e) => ({
       eventId: e.event_id,
       messageId: e.message_id,
@@ -125,16 +125,16 @@ export class MessageService {
   /**
    * Retrieves paginated messages for a conversation in stable chronological order.
    */
-  public getConversationMessages(
+  public async getConversationMessages(
     tenantId: string,
     conversationId: string,
     query: ConversationQueryInput,
     db?: DatabaseSync
-  ): PaginatedResult<MessageDTO> {
+  ): Promise<PaginatedResult<MessageDTO>> {
     const limit = query.limit || 20;
     const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
 
-    const rows = messageRepository.findConversationMessages(
+    const rows = await messageRepository.findConversationMessages(
       tenantId,
       conversationId,
       limit,

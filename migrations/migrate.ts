@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { getEnvConfig } from '../src/config/env.js';
+import { getEnvConfig, isPostgres } from '../src/config/env.js';
+import { runPostgresMigrations } from '../src/db/postgres.js';
 
 export function runMigrations(dbInstance?: DatabaseSync): void {
   const env = getEnvConfig();
@@ -36,7 +37,7 @@ export function runMigrations(dbInstance?: DatabaseSync): void {
 
   const migrationsDir = path.resolve(__dirname);
   const files = fs.readdirSync(migrationsDir)
-    .filter((f) => f.endsWith('.sql'))
+    .filter((f) => f.endsWith('.sql') && !f.includes('postgres'))
     .sort();
 
   for (const file of files) {
@@ -55,7 +56,7 @@ export function runMigrations(dbInstance?: DatabaseSync): void {
         db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
           .run(version, file, new Date().toISOString());
         db.exec('COMMIT;');
-        console.log(`[Migrations] Applied migration: ${file}`);
+        console.log(`[Migrations] Applied SQLite migration: ${file}`);
       } catch (err) {
         db.exec('ROLLBACK;');
         console.error(`[Migrations] Failed applying migration ${file}:`, err);
@@ -69,13 +70,26 @@ export function runMigrations(dbInstance?: DatabaseSync): void {
   }
 }
 
-if (process.argv[1] && (process.argv[1].endsWith('migrate.ts') || process.argv[1].endsWith('migrate.js'))) {
-  try {
-    console.log('[Migrations] Running migrations...');
+export async function runAllMigrations(): Promise<void> {
+  if (isPostgres()) {
+    console.log('[Migrations] Detected PostgreSQL configuration, executing PostgreSQL migrations...');
+    await runPostgresMigrations();
+    console.log('[Migrations] PostgreSQL migrations completed successfully.');
+  } else {
+    console.log('[Migrations] Detected SQLite configuration, executing SQLite migrations...');
     runMigrations();
-    console.log('[Migrations] All migrations completed successfully.');
-  } catch (error) {
-    console.error('[Migrations] Migration failed:', error);
-    process.exit(1);
+    console.log('[Migrations] SQLite migrations completed successfully.');
   }
+}
+
+if (process.argv[1] && (process.argv[1].endsWith('migrate.ts') || process.argv[1].endsWith('migrate.js'))) {
+  runAllMigrations()
+    .then(() => {
+      console.log('[Migrations] All migrations completed successfully.');
+      process.exit(0);
+    })
+    .catch((error) => {
+      console.error('[Migrations] Migration failed:', error);
+      process.exit(1);
+    });
 }

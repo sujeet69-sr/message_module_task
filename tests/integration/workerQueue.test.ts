@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { getDatabase } from '../../src/db/database.js';
-import { jobQueueRepository } from '../../src/repositories/jobQueueRepository.js';
 import { workerQueueService } from '../../src/services/workerQueue.js';
 import { createTestDatabase, TestDbContext } from '../helpers/testDb.js';
 
@@ -26,7 +24,7 @@ describe('Worker Queue with Retry & Dead-Letter Queue (DLQ) Tests', () => {
       }
     });
 
-    const job = workerQueueService.enqueue('test-success-queue', { value: 42 });
+    const job = await workerQueueService.enqueue('test-success-queue', { value: 42 });
     assert.ok(job.id);
     assert.equal(job.status, 'PENDING');
 
@@ -51,7 +49,7 @@ describe('Worker Queue with Retry & Dead-Letter Queue (DLQ) Tests', () => {
     });
 
     // Enqueue job with maxAttempts = 2
-    const job = workerQueueService.enqueue('test-dlq-queue', { test: true }, 2);
+    const job = await workerQueueService.enqueue('test-dlq-queue', { test: true }, 2);
 
     // Attempt 1: fails, status moves to FAILED, will retry
     await workerQueueService.processNextJobs();

@@ -44,10 +44,10 @@ class MetricsService {
     }
   }
 
-  public getMetrics(): MetricsSummary {
+  public async getMetrics(): Promise<MetricsSummary> {
     let queueStats: Record<string, number> = {};
     try {
-      queueStats = jobQueueRepository.getStats();
+      queueStats = await jobQueueRepository.getStats();
     } catch {
       queueStats = { error: -1 };
     }

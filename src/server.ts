@@ -1,7 +1,7 @@
-import { runMigrations } from '../migrations/migrate.js';
+import { runAllMigrations } from '../migrations/migrate.js';
 import { app } from './app.js';
-import { getEnvConfig } from './config/env.js';
-import { closeDatabase, getDatabase } from './db/database.js';
+import { getEnvConfig, isPostgres } from './config/env.js';
+import { getDatabaseAdapter } from './db/adapter.js';
 import { workerQueueService } from './services/workerQueue.js';
 import { logger } from './utils/logger.js';
 
@@ -11,13 +11,15 @@ async function bootstrap(): Promise<void> {
   logger.info('Initializing Multi-Tenant Messaging Service', {
     env: config.NODE_ENV,
     port: config.PORT,
-    database: config.DATABASE_PATH,
+    databaseEngine: isPostgres() ? 'PostgreSQL' : 'SQLite',
+    databaseTarget: isPostgres()
+      ? (config.DATABASE_URL ? '[DATABASE_URL configured]' : `${config.PGHOST}:${config.PGPORT}/${config.PGDATABASE}`)
+      : config.DATABASE_PATH,
   });
 
   try {
-    // 1. Ensure SQLite database connection and run schema migrations
-    const db = getDatabase();
-    runMigrations(db);
+    // 1. Ensure database connection and run schema migrations
+    await runAllMigrations();
     logger.info('Database schema migrations applied successfully');
 
     // 2. Start asynchronous background worker queue
@@ -29,13 +31,13 @@ async function bootstrap(): Promise<void> {
     });
 
     // 4. Graceful shutdown handling
-    const shutdown = (signal: string) => {
+    const shutdown = async (signal: string) => {
       logger.info(`Received ${signal}. Shutting down gracefully...`);
 
-      server.close(() => {
+      server.close(async () => {
         logger.info('HTTP server closed');
         workerQueueService.stop();
-        closeDatabase();
+        await getDatabaseAdapter().close();
         logger.info('Graceful shutdown completed');
         process.exit(0);
       });

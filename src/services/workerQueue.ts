@@ -29,10 +29,10 @@ export class WorkerQueueService {
     this.handlers.set(queue, handler);
   }
 
-  public enqueue(queue: string, payload: unknown, maxAttempts?: number): WorkerJobRecord {
+  public async enqueue(queue: string, payload: unknown, maxAttempts?: number): Promise<WorkerJobRecord> {
     const config = getEnvConfig();
     const attempts = maxAttempts ?? config.WORKER_MAX_RETRIES;
-    const job = jobQueueRepository.enqueue(queue, payload, attempts);
+    const job = await jobQueueRepository.enqueue(queue, payload, attempts);
     logger.debug('Job enqueued', { jobId: job.id, queue });
     return job;
   }
@@ -76,10 +76,10 @@ export class WorkerQueueService {
     try {
       const config = getEnvConfig();
       for (const queue of this.handlers.keys()) {
-        const jobs = jobQueueRepository.fetchPendingJobs(queue, config.WORKER_CONCURRENCY);
+        const jobs = await jobQueueRepository.fetchPendingJobs(queue, config.WORKER_CONCURRENCY);
 
         for (const job of jobs) {
-          const acquired = jobQueueRepository.markProcessing(job.id);
+          const acquired = await jobQueueRepository.markProcessing(job.id);
           if (!acquired) continue;
 
           await this.executeJob(job);
@@ -99,7 +99,7 @@ export class WorkerQueueService {
 
     if (!handler) {
       logger.error('No handler registered for queue', { queue: job.queue, jobId: job.id });
-      jobQueueRepository.markFailed(
+      await jobQueueRepository.markFailed(
         job.id,
         `No handler registered for queue ${job.queue}`,
         new Date().toISOString(),
@@ -111,7 +111,7 @@ export class WorkerQueueService {
     try {
       const parsedPayload = JSON.parse(job.payload);
       await handler(parsedPayload, job);
-      jobQueueRepository.markCompleted(job.id);
+      await jobQueueRepository.markCompleted(job.id);
       logger.debug('Job executed successfully', { jobId: job.id, queue: job.queue });
     } catch (error: any) {
       const currentAttempt = job.attempts + 1;
@@ -131,7 +131,7 @@ export class WorkerQueueService {
         error: error.message,
       });
 
-      jobQueueRepository.markFailed(
+      await jobQueueRepository.markFailed(
         job.id,
         error.message || 'Execution error',
         nextRunAt,

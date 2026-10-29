@@ -10,7 +10,7 @@ export class MessageController {
   public async createMessage(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const parsedBody = CreateMessageSchema.parse(req.body);
-      const createdMessage = messageService.createMessage(parsedBody, req.tenantId);
+      const createdMessage = await messageService.createMessage(parsedBody, req.tenantId);
 
       res.status(201).json({
         success: true,
@@ -31,7 +31,7 @@ export class MessageController {
         throw new BadRequestError('messageId route parameter is required');
       }
 
-      const message = messageService.getMessage(messageId.trim(), req.tenantId);
+      const message = await messageService.getMessage(messageId.trim(), req.tenantId);
 
       res.status(200).json({
         success: true,
@@ -59,7 +59,7 @@ export class MessageController {
       const query = ConversationQuerySchema.parse(req.query);
       const tenantId = req.tenantId!; // Enforced by requireTenantHeader middleware
 
-      const result = messageService.getConversationMessages(
+      const result = await messageService.getConversationMessages(
         tenantId,
         conversationId.trim(),
         query

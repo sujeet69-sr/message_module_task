@@ -5,6 +5,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, describe, it } from 'node:test';
 import { runMigrations } from '../../migrations/migrate.js';
+import { resetDatabaseAdapter } from '../../src/db/adapter.js';
 import { closeDatabase, getDatabase } from '../../src/db/database.js';
 import { messageRepository } from '../../src/repositories/messageRepository.js';
 import { webhookService } from '../../src/services/webhookService.js';
@@ -15,6 +16,7 @@ describe('Server Restart & Database Persistence Tests', () => {
 
   after(() => {
     closeDatabase();
+    resetDatabaseAdapter();
     try {
       if (fs.existsSync(tempDir)) {
         fs.rmSync(tempDir, { recursive: true, force: true });
@@ -24,9 +26,15 @@ describe('Server Restart & Database Persistence Tests', () => {
     }
   });
 
-  it('Verifies message and webhook event persist across server restarts', () => {
+  it('Verifies message and webhook event persist across server restarts', async () => {
     // Phase 1: Initialize server session 1
     process.env.DATABASE_PATH = persistentDbPath;
+    delete process.env.DATABASE_URL;
+    delete process.env.DB_CLIENT;
+
+    closeDatabase();
+    resetDatabaseAdapter();
+
     let db: DatabaseSync = getDatabase(persistentDbPath);
     runMigrations(db);
 
@@ -34,7 +42,7 @@ describe('Server Restart & Database Persistence Tests', () => {
     const now = new Date().toISOString();
 
     // Persist a message
-    messageRepository.create(
+    await messageRepository.create(
       {
         id: messageId,
         tenant_id: 'tenant-persist',
@@ -56,7 +64,7 @@ describe('Server Restart & Database Persistence Tests', () => {
     );
 
     // Apply webhook update
-    webhookService.processWebhookEvent(
+    await webhookService.processWebhookEvent(
       {
         eventId: 'evt-persist-1',
         messageId,
@@ -68,6 +76,7 @@ describe('Server Restart & Database Persistence Tests', () => {
 
     // Phase 2: Simulate process crash / server restart by closing the DB connection
     closeDatabase();
+    resetDatabaseAdapter();
 
     // Verify the physical database file exists on disk and is non-empty
     assert.ok(fs.existsSync(persistentDbPath));
@@ -78,7 +87,7 @@ describe('Server Restart & Database Persistence Tests', () => {
     db = getDatabase(persistentDbPath);
 
     // Query message from restarted database
-    const restoredMessage = messageRepository.findById(messageId, db);
+    const restoredMessage = await messageRepository.findById(messageId, db);
     assert.ok(restoredMessage, 'Message should be found in database after restart');
     assert.equal(restoredMessage.id, messageId);
     assert.equal(restoredMessage.status, 'DELIVERED');

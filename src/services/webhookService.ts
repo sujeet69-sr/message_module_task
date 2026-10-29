@@ -1,5 +1,4 @@
 import { DatabaseSync } from 'node:sqlite';
-import { getDatabase, withTransaction } from '../db/database.js';
 import { NotFoundError } from '../errors/AppError.js';
 import {
   EventOutcome,
@@ -128,12 +127,11 @@ export class WebhookService {
   /**
    * Processes a provider webhook event idempotently within a database transaction.
    */
-  public processWebhookEvent(input: WebhookEventInput, db?: DatabaseSync): WebhookProcessResult {
-    const activeDb = db || getDatabase();
+  public async processWebhookEvent(input: WebhookEventInput, db?: DatabaseSync): Promise<WebhookProcessResult> {
     const now = new Date().toISOString();
 
     // Step 1: Idempotency Check on eventId
-    const existingEvent = webhookEventRepository.findByEventId(input.eventId, activeDb);
+    const existingEvent = await webhookEventRepository.findByEventId(input.eventId, db);
     if (existingEvent) {
       logger.info('Duplicate webhook event detected and ignored', {
         eventId: input.eventId,
@@ -143,7 +141,7 @@ export class WebhookService {
 
       metricsService.recordDuplicateWebhook();
 
-      const message = messageRepository.findById(input.messageId, activeDb);
+      const message = await messageRepository.findById(input.messageId, db);
 
       return {
         eventId: input.eventId,
@@ -157,7 +155,7 @@ export class WebhookService {
     }
 
     // Step 2: Message Existence Check & Unmatched Event Strategy
-    const message = messageRepository.findById(input.messageId, activeDb);
+    const message = await messageRepository.findById(input.messageId, db);
     if (!message) {
       logger.warn('Webhook event received for unknown message ID', {
         eventId: input.eventId,
@@ -177,79 +175,76 @@ export class WebhookService {
         outcome: 'UNMATCHED_MESSAGE',
         notes: `Message with ID ${input.messageId} does not exist in messages table`,
       };
-      webhookEventRepository.create(unmatchedEvent, activeDb);
+      await webhookEventRepository.create(unmatchedEvent, db);
       metricsService.recordUnmatchedWebhook();
 
       throw new NotFoundError(`Message with ID ${input.messageId} was not found`);
     }
 
-    // Step 3: Atomic Transaction for Event Persistence & Status Update
-    return withTransaction((txDb) => {
-      // Evaluate State Transition and Timestamps
-      const decision = evaluateStatusTransition(message, input.status, input.occurredAt);
+    // Step 3: Evaluate State Transition and Timestamps
+    const decision = evaluateStatusTransition(message, input.status, input.occurredAt);
 
-      // Persist the Webhook Event record
-      const eventRecord: WebhookEventRecord = {
-        event_id: input.eventId,
-        message_id: input.messageId,
-        status: input.status,
-        occurred_at: input.occurredAt,
-        received_at: now,
-        processed_at: now,
-        payload: JSON.stringify(input),
-        outcome: decision.outcome,
-        notes: decision.notes,
-      };
-      webhookEventRepository.create(eventRecord, txDb);
+    // Persist the Webhook Event record
+    const eventRecord: WebhookEventRecord = {
+      event_id: input.eventId,
+      message_id: input.messageId,
+      status: input.status,
+      occurred_at: input.occurredAt,
+      received_at: now,
+      processed_at: now,
+      payload: JSON.stringify(input),
+      outcome: decision.outcome,
+      notes: decision.notes,
+    };
+    await webhookEventRepository.create(eventRecord, db);
 
-      // Apply updates to Message record if required
-      const updates: Partial<MessageRecord> = {
-        updated_at: now,
-        ...decision.timestampUpdates,
-      };
+    // Apply updates to Message record if required
+    const updates: Partial<MessageRecord> = {
+      updated_at: now,
+      ...decision.timestampUpdates,
+    };
 
-      if (decision.shouldUpdateStatus) {
-        updates.status = decision.targetStatus;
-        if (input.failureReason) {
-          updates.failure_reason = input.failureReason;
-        }
+    if (decision.shouldUpdateStatus) {
+      updates.status = decision.targetStatus;
+      if (input.failureReason) {
+        updates.failure_reason = input.failureReason;
       }
+    }
 
-      // Perform optimistic concurrency update
-      const updated = messageRepository.updateWithOptimisticLock(
-        message.id,
-        updates,
-        message.version,
-        txDb
-      );
+    // Perform optimistic concurrency update
+    const updated = await messageRepository.updateWithOptimisticLock(
+      message.id,
+      updates,
+      message.version,
+      db
+    );
 
-      if (!updated) {
-        logger.warn('Optimistic concurrency lock fallback to direct update in transaction', {
-          messageId: message.id,
-        });
-        messageRepository.updateDirect(message.id, updates, txDb);
-      }
-
-      logger.info('Webhook event processed successfully', {
-        eventId: input.eventId,
-        messageId: input.messageId,
-        previousStatus: message.status,
-        newStatus: decision.targetStatus,
-        outcome: decision.outcome,
+    if (!updated) {
+      logger.warn('Optimistic concurrency lock fallback to direct update in transaction', {
+        messageId: message.id,
       });
+      await messageRepository.updateDirect(message.id, updates, db);
+    }
 
-      metricsService.recordWebhookProcessed(decision.outcome);
+    logger.info('Webhook event processed successfully', {
+      eventId: input.eventId,
+      messageId: input.messageId,
+      previousStatus: message.status,
+      newStatus: decision.targetStatus,
+      outcome: decision.outcome,
+    });
 
-      return {
-        eventId: input.eventId,
-        messageId: input.messageId,
-        status: input.status,
-        outcome: decision.outcome,
-        duplicate: false,
-        messageStatus: decision.targetStatus,
-        notes: decision.notes,
-      };
-    }, activeDb);
+    metricsService.recordWebhookProcessed(decision.outcome);
+
+    return {
+      eventId: input.eventId,
+      messageId: input.messageId,
+      status: input.status,
+      outcome: decision.outcome,
+      duplicate: false,
+      messageStatus: decision.targetStatus,
+      notes: decision.notes,
+    };
   }
 }
 

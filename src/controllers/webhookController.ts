@@ -10,7 +10,7 @@ export class WebhookController {
   ): Promise<void> {
     try {
       const parsedBody = WebhookEventSchema.parse(req.body);
-      const result = webhookService.processWebhookEvent(parsedBody);
+      const result = await webhookService.processWebhookEvent(parsedBody);
 
       res.status(200).json({
         success: true,

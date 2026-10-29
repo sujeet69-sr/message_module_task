@@ -1,13 +1,13 @@
 import { Request, Response } from 'express';
-import { checkDatabaseHealth } from '../db/database.js';
+import { getDatabaseAdapter } from '../db/adapter.js';
 import { metricsService } from '../services/metricsService.js';
 
 export class HealthController {
-  public getHealth(_req: Request, res: Response): void {
-    const isDbConnected = checkDatabaseHealth();
+  public async getHealth(_req: Request, res: Response): Promise<void> {
+    const health = await getDatabaseAdapter().checkHealth();
     const uptimeSeconds = process.uptime();
 
-    if (!isDbConnected) {
+    if (!health.status) {
       res.status(503).json({
         status: 'unhealthy',
         timestamp: new Date().toISOString(),
@@ -25,14 +25,14 @@ export class HealthController {
       uptime: uptimeSeconds,
       database: {
         status: 'connected',
-        engine: 'sqlite',
+        engine: health.engine,
       },
       version: '1.0.0',
     });
   }
 
-  public getMetrics(_req: Request, res: Response): void {
-    const metrics = metricsService.getMetrics();
+  public async getMetrics(_req: Request, res: Response): Promise<void> {
+    const metrics = await metricsService.getMetrics();
     res.status(200).json({
       success: true,
       data: metrics,
