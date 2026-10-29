@@ -1,0 +1,152 @@
+###
+# Multi-Tenant Messaging Platform API - Sample Requests
+# Compatible with VS Code REST Client, IntelliJ HTTP Client, and cURL
+###
+
+@baseUrl = http://localhost:3000
+@tenantId = tenant-a
+@conversationId = conv-100
+
+### 1. Health Check
+# curl -X GET http://localhost:3000/health
+GET {{baseUrl}}/health
+
+### 2. Metrics Telemetry
+# curl -X GET http://localhost:3000/metrics
+GET {{baseUrl}}/metrics
+
+### 3. Create Message (Tenant A)
+# curl -X POST http://localhost:3000/api/v1/messages \
+#   -H "Content-Type: application/json" \
+#   -H "x-tenant-id: tenant-a" \
+#   -d '{"tenantId":"tenant-a","conversationId":"conv-100","to":"+919876543210","text":"Your Order has shipped"}'
+POST {{baseUrl}}/api/v1/messages
+Content-Type: application/json
+x-tenant-id: {{tenantId}}
+
+{
+  "tenantId": "{{tenantId}}",
+  "conversationId": "{{conversationId}}",
+  "to": "+919876543210",
+  "text": "Your Order has shipped"
+}
+
+### 4. Create Another Message (Tenant A)
+POST {{baseUrl}}/api/v1/messages
+Content-Type: application/json
+x-tenant-id: {{tenantId}}
+
+{
+  "tenantId": "{{tenantId}}",
+  "conversationId": "{{conversationId}}",
+  "to": "+919876543210",
+  "text": "Delivery expected by 2:00 PM"
+}
+
+### 5. Create Message for Tenant B (Demonstrating Multi-Tenancy)
+POST {{baseUrl}}/api/v1/messages
+Content-Type: application/json
+x-tenant-id: tenant-b
+
+{
+  "tenantId": "tenant-b",
+  "conversationId": "conv-100",
+  "to": "+14155552671",
+  "text": "Welcome to Tenant B workspace"
+}
+
+### 6. Get Message Details by ID (Replace :messageId with actual ID from create response)
+# curl -X GET http://localhost:3000/api/v1/messages/msg-123 -H "x-tenant-id: tenant-a"
+GET {{baseUrl}}/api/v1/messages/msg-REPLACE_WITH_ID
+x-tenant-id: {{tenantId}}
+
+### 7. Provider Webhook - SENT Status Event
+# curl -X POST http://localhost:3000/api/v1/webhooks/provider \
+#   -H "Content-Type: application/json" \
+#   -d '{"eventId":"evt-001","messageId":"msg-REPLACE_WITH_ID","status":"SENT","occurredAt":"2026-10-16T08:30:00.000Z"}'
+POST {{baseUrl}}/api/v1/webhooks/provider
+Content-Type: application/json
+
+{
+  "eventId": "evt-001",
+  "messageId": "msg-REPLACE_WITH_ID",
+  "status": "SENT",
+  "occurredAt": "2026-10-16T08:30:00.000Z"
+}
+
+### 8. Provider Webhook - DELIVERED Status Event
+POST {{baseUrl}}/api/v1/webhooks/provider
+Content-Type: application/json
+
+{
+  "eventId": "evt-002",
+  "messageId": "msg-REPLACE_WITH_ID",
+  "status": "DELIVERED",
+  "occurredAt": "2026-10-16T08:31:00.000Z"
+}
+
+### 9. Provider Webhook - Duplicate Event (Tests Idempotency - returns 200 duplicate: true)
+POST {{baseUrl}}/api/v1/webhooks/provider
+Content-Type: application/json
+
+{
+  "eventId": "evt-002",
+  "messageId": "msg-REPLACE_WITH_ID",
+  "status": "DELIVERED",
+  "occurredAt": "2026-10-16T08:31:00.000Z"
+}
+
+### 10. Provider Webhook - Out-of-Order SENT event arriving after READ
+# First send READ event:
+POST {{baseUrl}}/api/v1/webhooks/provider
+Content-Type: application/json
+
+{
+  "eventId": "evt-003",
+  "messageId": "msg-REPLACE_WITH_ID",
+  "status": "READ",
+  "occurredAt": "2026-10-16T08:45:00.000Z"
+}
+
+### 11. Provider Webhook - Out-of-Order SENT event arriving after READ (does not regress status!)
+POST {{baseUrl}}/api/v1/webhooks/provider
+Content-Type: application/json
+
+{
+  "eventId": "evt-004",
+  "messageId": "msg-REPLACE_WITH_ID",
+  "status": "SENT",
+  "occurredAt": "2026-10-16T08:29:00.000Z"
+}
+
+### 12. Provider Webhook - Unknown Message ID (Tests 404 & Unmatched Event Strategy)
+POST {{baseUrl}}/api/v1/webhooks/provider
+Content-Type: application/json
+
+{
+  "eventId": "evt-unknown-999",
+  "messageId": "msg-nonexistent-id",
+  "status": "SENT",
+  "occurredAt": "2026-10-16T08:30:00.000Z"
+}
+
+### 13. Query Conversation Messages with Pagination (Tenant A)
+# curl -X GET "http://localhost:3000/api/v1/conversations/conv-100/messages?limit=20" -H "x-tenant-id: tenant-a"
+GET {{baseUrl}}/api/v1/conversations/{{conversationId}}/messages?limit=20
+x-tenant-id: {{tenantId}}
+
+### 14. Query Conversation Messages as Tenant B (Tenant Isolation - Cannot see Tenant A messages)
+GET {{baseUrl}}/api/v1/conversations/{{conversationId}}/messages?limit=20
+x-tenant-id: tenant-b
+
+### 15. Validation Failure - Invalid Phone & Missing Text (Returns 400 Bad Request)
+POST {{baseUrl}}/api/v1/messages
+Content-Type: application/json
+x-tenant-id: {{tenantId}}
+
+{
+  "tenantId": "tenant-a",
+  "conversationId": "conv-100",
+  "to": "123-bad-phone",
+  "text": ""
+}

@@ -1,0 +1,26 @@
+services:
+  messaging-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: messaging-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - DATABASE_PATH=/app/data/messaging.db
+      - LOG_LEVEL=info
+      - WORKER_ENABLED=true
+      - WORKER_CONCURRENCY=2
+      - WORKER_POLL_INTERVAL_MS=500
+      - WORKER_MAX_RETRIES=3
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

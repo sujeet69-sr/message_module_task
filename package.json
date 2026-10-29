@@ -1,0 +1,37 @@
+{
+  "name": "multi-tenant-messaging-api",
+  "version": "1.0.0",
+  "description": "Production-grade multi-tenant messaging REST API with idempotent provider webhooks and status transition management",
+  "main": "dist/src/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/server.js",
+    "dev": "tsx watch src/server.ts",
+    "migrate": "tsx migrations/migrate.ts",
+    "test": "tsx --test \"tests/**/*.test.ts\"",
+    "simulate": "node scripts/simulate_webhooks.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "multi-tenant",
+    "messaging",
+    "webhooks",
+    "idempotency",
+    "rest-api"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.1",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

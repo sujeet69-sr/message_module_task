@@ -1,0 +1,260 @@
+{
+  "info": {
+    "_postman_id": "a8277259-3bfb-4f51-b8ef-5e269781fbc0",
+    "name": "Multi-Tenant Messaging Platform API",
+    "description": "Comprehensive Postman collection covering message creation, retrieval, cursor pagination, idempotent provider webhooks, out-of-order event handling, and health/metrics.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "tenantId",
+      "value": "tenant-a",
+      "type": "string"
+    },
+    {
+      "key": "conversationId",
+      "value": "conv-100",
+      "type": "string"
+    },
+    {
+      "key": "messageId",
+      "value": "msg-placeholder",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health & Metrics",
+      "item": [
+        {
+          "name": "Service Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            }
+          }
+        },
+        {
+          "name": "Service Metrics Telemetry",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/metrics",
+              "host": ["{{baseUrl}}"],
+              "path": ["metrics"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Messages API",
+      "item": [
+        {
+          "name": "Create Message (POST /api/v1/messages)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.data && json.data.id) {",
+                  "    pm.collectionVariables.set('messageId', json.data.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenantId\": \"{{tenantId}}\",\n  \"conversationId\": \"{{conversationId}}\",\n  \"to\": \"+919876543210\",\n  \"text\": \"Your Order has shipped\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/messages",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "messages"]
+            }
+          }
+        },
+        {
+          "name": "Get Message by ID (GET /api/v1/messages/:messageId)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/messages/{{messageId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "messages", "{{messageId}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Conversation Messages (GET /api/v1/conversations/:conversationId/messages)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/conversations/{{conversationId}}/messages?limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "conversations", "{{conversationId}}", "messages"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "cursor",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhooks API",
+      "item": [
+        {
+          "name": "Provider Webhook - SENT",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"evt-001\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"SENT\",\n  \"occurredAt\": \"2026-10-16T08:30:00.000Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "webhooks", "provider"]
+            }
+          }
+        },
+        {
+          "name": "Provider Webhook - DELIVERED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"evt-002\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"DELIVERED\",\n  \"occurredAt\": \"2026-10-16T08:31:00.000Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "webhooks", "provider"]
+            }
+          }
+        },
+        {
+          "name": "Provider Webhook - Idempotent Duplicate (Retried evt-002)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"evt-002\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"DELIVERED\",\n  \"occurredAt\": \"2026-10-16T08:31:00.000Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "webhooks", "provider"]
+            }
+          }
+        },
+        {
+          "name": "Provider Webhook - Out of Order (SENT after DELIVERED/READ)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"evt-003\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"SENT\",\n  \"occurredAt\": \"2026-10-16T08:29:00.000Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "webhooks", "provider"]
+            }
+          }
+        },
+        {
+          "name": "Provider Webhook - Unknown Message ID (404 Test)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"evt-999\",\n  \"messageId\": \"msg-nonexistent\",\n  \"status\": \"SENT\",\n  \"occurredAt\": \"2026-10-16T08:30:00.000Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "webhooks", "provider"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
