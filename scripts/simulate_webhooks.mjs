@@ -13,15 +13,25 @@
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 
 async function jsonFetch(url, options = {}) {
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
-  });
-  const data = await res.json().catch(() => ({}));
-  return { status: res.status, ok: res.ok, data };
+  try {
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    return { status: res.status, ok: res.ok, data };
+  } catch (err) {
+    if (err.cause?.code === 'ECONNREFUSED' || err.message?.includes('fetch failed')) {
+      console.error(`\n[ERROR] Cannot connect to server at ${BASE_URL} (Connection Refused).`);
+      console.error(`\nThe API server is not running yet. Please start the server first in a separate terminal:`);
+      console.error(`   npm start   (or: npm run dev)\n`);
+      process.exit(1);
+    }
+    throw err;
+  }
 }
 
 async function runSimulation() {
