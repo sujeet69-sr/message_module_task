@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "a8277259-3bfb-4f51-b8ef-5e269781fbc0",
     "name": "Multi-Tenant Messaging Platform API",
-    "description": "Comprehensive Postman collection covering message creation, retrieval, cursor pagination, idempotent provider webhooks, out-of-order event handling, and health/metrics.",
+    "description": "Comprehensive Postman Collection with automated tests, chaining, tenant isolation, and out-of-order webhook simulation.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -23,16 +23,37 @@
     },
     {
       "key": "messageId",
-      "value": "msg-placeholder",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "nextCursor",
+      "value": "",
       "type": "string"
     }
   ],
   "item": [
     {
-      "name": "Health & Metrics",
+      "name": "1. Health & Telemetry",
       "item": [
         {
-          "name": "Service Health Check",
+          "name": "GET /health - Service & Database Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Service is healthy', () => {",
+                  "    pm.expect(json.status).to.eql('healthy');",
+                  "    pm.expect(json.database.status).to.eql('connected');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
           "request": {
             "method": "GET",
             "header": [],
@@ -40,11 +61,30 @@
               "raw": "{{baseUrl}}/health",
               "host": ["{{baseUrl}}"],
               "path": ["health"]
-            }
+            },
+            "description": "Verifies that the API server is alive and connected to SQLite database."
           }
         },
         {
-          "name": "Service Metrics Telemetry",
+          "name": "GET /metrics - Volume & Error Telemetry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Metrics object contains counters', () => {",
+                  "    pm.expect(json.success).to.be.true;",
+                  "    pm.expect(json.data).to.have.property('messagesCreated');",
+                  "    pm.expect(json.data).to.have.property('webhooksTotal');",
+                  "    pm.expect(json.data).to.have.property('workerQueue');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
           "request": {
             "method": "GET",
             "header": [],
@@ -52,24 +92,35 @@
               "raw": "{{baseUrl}}/metrics",
               "host": ["{{baseUrl}}"],
               "path": ["metrics"]
-            }
+            },
+            "description": "Returns telemetry counts: created messages, processed webhooks, duplicate drops, out-of-order handling, and worker queue states."
           }
         }
       ]
     },
     {
-      "name": "Messages API",
+      "name": "2. Messages Lifecycle",
       "item": [
         {
-          "name": "Create Message (POST /api/v1/messages)",
+          "name": "POST /api/v1/messages - Create Message (Tenant A)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
+                  "pm.test('Status code is 201 Created', () => pm.response.to.have.status(201));",
                   "const json = pm.response.json();",
+                  "pm.test('Message created with QUEUED status', () => {",
+                  "    pm.expect(json.success).to.be.true;",
+                  "    pm.expect(json.data.status).to.eql('QUEUED');",
+                  "    pm.expect(json.data.id).to.be.a('string');",
+                  "    pm.expect(json.data.tenantId).to.eql(pm.collectionVariables.get('tenantId'));",
+                  "});",
+                  "// Auto-save messageId for subsequent webhook and get requests",
                   "if (json.data && json.data.id) {",
                   "    pm.collectionVariables.set('messageId', json.data.id);",
+                  "    pm.environment.set('messageId', json.data.id);",
+                  "    console.log('Saved messageId:', json.data.id);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -90,17 +141,35 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"tenantId\": \"{{tenantId}}\",\n  \"conversationId\": \"{{conversationId}}\",\n  \"to\": \"+919876543210\",\n  \"text\": \"Your Order has shipped\"\n}"
+              "raw": "{\n  \"tenantId\": \"{{tenantId}}\",\n  \"conversationId\": \"{{conversationId}}\",\n  \"to\": \"+919876543210\",\n  \"text\": \"Your Order #8921 has been shipped via Express Carrier!\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/messages",
               "host": ["{{baseUrl}}"],
               "path": ["api", "v1", "messages"]
-            }
+            },
+            "description": "Creates a new message with initial status QUEUED. Automatically saves the returned message ID into collection and environment variables."
           }
         },
         {
-          "name": "Get Message by ID (GET /api/v1/messages/:messageId)",
+          "name": "GET /api/v1/messages/:messageId - Retrieve Message",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Message retrieved matches messageId', () => {",
+                  "    pm.expect(json.success).to.be.true;",
+                  "    pm.expect(json.data.id).to.eql(pm.collectionVariables.get('messageId'));",
+                  "    pm.expect(json.data.timestamps).to.have.property('queuedAt');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
           "request": {
             "method": "GET",
             "header": [
@@ -113,17 +182,448 @@
               "raw": "{{baseUrl}}/api/v1/messages/{{messageId}}",
               "host": ["{{baseUrl}}"],
               "path": ["api", "v1", "messages", "{{messageId}}"]
-            }
+            },
+            "description": "Fetches single message details, status, all lifecycle timestamps, and historical webhook events."
           }
         },
         {
-          "name": "Get Conversation Messages (GET /api/v1/conversations/:conversationId/messages)",
+          "name": "POST /api/v1/messages - Tenant B Creation (Multi-Tenancy)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 201 Created', () => pm.response.to.have.status(201));",
+                  "const json = pm.response.json();",
+                  "pm.test('Tenant B message created', () => {",
+                  "    pm.expect(json.data.tenantId).to.eql('tenant-b');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "tenant-b"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenantId\": \"tenant-b\",\n  \"conversationId\": \"{{conversationId}}\",\n  \"to\": \"+14155552671\",\n  \"text\": \"Private message inside Tenant B workspace\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/messages",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "messages"]
+            },
+            "description": "Creates a message in the same conversationId under Tenant B to demonstrate data isolation."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Provider Webhooks & State Machine",
+      "item": [
+        {
+          "name": "Webhook: SENT Event",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.variables.set('eventIdSent', 'evt-sent-' + Date.now());",
+                  "pm.variables.set('sentTime', new Date(Date.now() - 30000).toISOString());"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Transition applied: QUEUED -> SENT', () => {",
+                  "    pm.expect(json.success).to.be.true;",
+                  "    pm.expect(json.data.outcome).to.eql('APPLIED');",
+                  "    pm.expect(json.data.messageStatus).to.eql('SENT');",
+                  "    pm.expect(json.data.duplicate).to.be.false;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"{{eventIdSent}}\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"SENT\",\n  \"occurredAt\": \"{{sentTime}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "webhooks", "provider"]
+            },
+            "description": "Simulates external provider webhook advancing message status from QUEUED to SENT."
+          }
+        },
+        {
+          "name": "Webhook: DELIVERED Event",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('savedDeliveredEventId', 'evt-deliv-' + Date.now());",
+                  "pm.variables.set('delivTime', new Date(Date.now() - 15000).toISOString());"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Transition applied: SENT -> DELIVERED', () => {",
+                  "    pm.expect(json.data.outcome).to.eql('APPLIED');",
+                  "    pm.expect(json.data.messageStatus).to.eql('DELIVERED');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"{{savedDeliveredEventId}}\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"DELIVERED\",\n  \"occurredAt\": \"{{delivTime}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "webhooks", "provider"]
+            },
+            "description": "Simulates delivery to recipient device, advancing status to DELIVERED."
+          }
+        },
+        {
+          "name": "Webhook: Idempotent Duplicate (Retried DELIVERED Event)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200 OK', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Duplicate safely recognized without duplicate effect', () => {",
+                  "    pm.expect(json.success).to.be.true;",
+                  "    pm.expect(json.data.duplicate).to.be.true;",
+                  "    pm.expect(json.data.outcome).to.eql('IGNORED_DUPLICATE');",
+                  "    pm.expect(json.data.messageStatus).to.eql('DELIVERED');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"{{savedDeliveredEventId}}\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"DELIVERED\",\n  \"occurredAt\": \"2026-10-29T10:01:00.000Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "webhooks", "provider"]
+            },
+            "description": "Tests idempotency by resending the exact same eventId. Returns 200 duplicate: true without altering state or duplicating records."
+          }
+        },
+        {
+          "name": "Webhook: READ Event",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.variables.set('eventIdRead', 'evt-read-' + Date.now());",
+                  "pm.variables.set('readTime', new Date().toISOString());"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Message status advanced to READ', () => {",
+                  "    pm.expect(json.data.outcome).to.eql('APPLIED');",
+                  "    pm.expect(json.data.messageStatus).to.eql('READ');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"{{eventIdRead}}\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"READ\",\n  \"occurredAt\": \"{{readTime}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "webhooks", "provider"]
+            },
+            "description": "Simulates recipient opening and reading the message."
+          }
+        },
+        {
+          "name": "Webhook: Out-of-Order Delayed SENT (Status Regression Protection)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.variables.set('eventIdOutOfOrder', 'evt-ooo-' + Date.now());",
+                  "pm.variables.set('earlierTime', new Date(Date.now() - 120000).toISOString());"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Status does NOT move backwards from READ to SENT', () => {",
+                  "    pm.expect(json.data.outcome).to.eql('IGNORED_OUT_OF_ORDER');",
+                  "    pm.expect(json.data.messageStatus).to.eql('READ');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"{{eventIdOutOfOrder}}\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"SENT\",\n  \"occurredAt\": \"{{earlierTime}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "webhooks", "provider"]
+            },
+            "description": "Crucial Edge Case: A delayed SENT webhook arrives AFTER the message has already reached READ. The API safely prevents backward regression while saving the audit trail."
+          }
+        },
+        {
+          "name": "Webhook: Unknown Message ID (404 & Unmatched Event Strategy)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 404 Not Found', () => pm.response.to.have.status(404));",
+                  "const json = pm.response.json();",
+                  "pm.test('Error code is NOT_FOUND', () => {",
+                  "    pm.expect(json.success).to.be.false;",
+                  "    pm.expect(json.error).to.eql('NOT_FOUND');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"evt-unknown-test-999\",\n  \"messageId\": \"msg-nonexistent-uuid-12345\",\n  \"status\": \"DELIVERED\",\n  \"occurredAt\": \"2026-10-29T10:00:00.000Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "webhooks", "provider"]
+            },
+            "description": "Tests handling of unknown message IDs. Returns 404 Not Found and persists event under outcome UNMATCHED_MESSAGE for audit."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Conversation History & Tenant Isolation",
+      "item": [
+        {
+          "name": "GET /api/v1/conversations/:conversationId/messages - Page 1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Returns items and pagination', () => {",
+                  "    pm.expect(json.success).to.be.true;",
+                  "    pm.expect(json.data).to.be.an('array');",
+                  "    pm.expect(json.pagination).to.have.property('hasMore');",
+                  "});",
+                  "if (json.pagination && json.pagination.nextCursor) {",
+                  "    pm.collectionVariables.set('nextCursor', json.pagination.nextCursor);",
+                  "    pm.environment.set('nextCursor', json.pagination.nextCursor);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
           "request": {
             "method": "GET",
             "header": [
               {
                 "key": "x-tenant-id",
                 "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/conversations/{{conversationId}}/messages?limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "conversations", "{{conversationId}}", "messages"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Retrieves conversation messages in stable chronological order. Sets nextCursor for cursor pagination."
+          }
+        },
+        {
+          "name": "GET /api/v1/conversations/:conversationId/messages - Page 2 (Cursor)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Cursor pagination succeeds', () => {",
+                  "    pm.expect(json.success).to.be.true;",
+                  "    pm.expect(json.data).to.be.an('array');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/conversations/{{conversationId}}/messages?limit=10&cursor={{nextCursor}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "conversations", "{{conversationId}}", "messages"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{nextCursor}}"
+                }
+              ]
+            },
+            "description": "Demonstrates cursor-based pagination using the nextCursor generated from Page 1."
+          }
+        },
+        {
+          "name": "GET /api/v1/conversations/:conversationId/messages - Tenant Isolation Enforcement",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Tenant B only sees Tenant B messages', () => {",
+                  "    pm.expect(json.success).to.be.true;",
+                  "    json.data.forEach(item => {",
+                  "        pm.expect(item.tenantId).to.eql('tenant-b');",
+                  "    });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "tenant-b"
               }
             ],
             "url": {
@@ -134,44 +634,105 @@
                 {
                   "key": "limit",
                   "value": "20"
-                },
-                {
-                  "key": "cursor",
-                  "value": "",
-                  "disabled": true
                 }
               ]
+            },
+            "description": "Enforces tenant isolation: Tenant B querying the same conversationId conv-100 will never see Tenant A messages."
+          }
+        },
+        {
+          "name": "GET /api/v1/conversations/:conversationId/messages - Missing x-tenant-id (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "const json = pm.response.json();",
+                  "pm.test('Error code is UNAUTHORIZED', () => {",
+                  "    pm.expect(json.error).to.eql('UNAUTHORIZED');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
             }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/conversations/{{conversationId}}/messages",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "conversations", "{{conversationId}}", "messages"]
+            },
+            "description": "Verifies that omitting the required x-tenant-id authentication header returns 401 Unauthorized."
           }
         }
       ]
     },
     {
-      "name": "Webhooks API",
+      "name": "5. Error Handling & Validation",
       "item": [
         {
-          "name": "Provider Webhook - SENT",
+          "name": "POST /api/v1/messages - Invalid Payload (400 Validation Error)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const json = pm.response.json();",
+                  "pm.test('Validation details returned', () => {",
+                  "    pm.expect(json.success).to.be.false;",
+                  "    pm.expect(json.error).to.eql('VALIDATION_ERROR');",
+                  "    pm.expect(json.details).to.be.an('array');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
               }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"eventId\": \"evt-001\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"SENT\",\n  \"occurredAt\": \"2026-10-16T08:30:00.000Z\"\n}"
+              "raw": "{\n  \"tenantId\": \"\",\n  \"conversationId\": \"\",\n  \"to\": \"invalid-phone\",\n  \"text\": \"\"\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
+              "raw": "{{baseUrl}}/api/v1/messages",
               "host": ["{{baseUrl}}"],
-              "path": ["api", "v1", "webhooks", "provider"]
-            }
+              "path": ["api", "v1", "messages"]
+            },
+            "description": "Validates that invalid payloads return appropriate 4xx HTTP responses with field-level error messages instead of generic 500s."
           }
         },
         {
-          "name": "Provider Webhook - DELIVERED",
+          "name": "POST /api/v1/webhooks/provider - Invalid Status Enum (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const json = pm.response.json();",
+                  "pm.test('Rejects invalid status enum', () => {",
+                  "    pm.expect(json.error).to.eql('VALIDATION_ERROR');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [
@@ -182,76 +743,14 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"eventId\": \"evt-002\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"DELIVERED\",\n  \"occurredAt\": \"2026-10-16T08:31:00.000Z\"\n}"
+              "raw": "{\n  \"eventId\": \"evt-err-1\",\n  \"messageId\": \"msg-123\",\n  \"status\": \"INVALID_STATUS_CODE\",\n  \"occurredAt\": \"2026-10-29T10:00:00.000Z\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/webhooks/provider",
               "host": ["{{baseUrl}}"],
               "path": ["api", "v1", "webhooks", "provider"]
-            }
-          }
-        },
-        {
-          "name": "Provider Webhook - Idempotent Duplicate (Retried evt-002)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"eventId\": \"evt-002\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"DELIVERED\",\n  \"occurredAt\": \"2026-10-16T08:31:00.000Z\"\n}"
             },
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "v1", "webhooks", "provider"]
-            }
-          }
-        },
-        {
-          "name": "Provider Webhook - Out of Order (SENT after DELIVERED/READ)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"eventId\": \"evt-003\",\n  \"messageId\": \"{{messageId}}\",\n  \"status\": \"SENT\",\n  \"occurredAt\": \"2026-10-16T08:29:00.000Z\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "v1", "webhooks", "provider"]
-            }
-          }
-        },
-        {
-          "name": "Provider Webhook - Unknown Message ID (404 Test)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"eventId\": \"evt-999\",\n  \"messageId\": \"msg-nonexistent\",\n  \"status\": \"SENT\",\n  \"occurredAt\": \"2026-10-16T08:30:00.000Z\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/webhooks/provider",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "v1", "webhooks", "provider"]
-            }
+            "description": "Tests that unsupported status values are cleanly rejected with a 400 Bad Request."
           }
         }
       ]
