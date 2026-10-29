@@ -7,12 +7,12 @@ import { createTestDatabase, TestDbContext } from '../helpers/testDb.js';
 describe('Message API Integration Tests', () => {
   let testDb: TestDbContext;
 
-  before(() => {
-    testDb = createTestDatabase();
+  before(async () => {
+    testDb = await createTestDatabase();
   });
 
-  after(() => {
-    testDb.cleanup();
+  after(async () => {
+    await testDb.cleanup();
   });
 
   it('POST /api/v1/messages successfully creates a message with status QUEUED', async () => {

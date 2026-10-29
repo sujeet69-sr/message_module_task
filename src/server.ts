@@ -1,26 +1,24 @@
-import { runAllMigrations } from '../migrations/migrate.js';
+import { runMigrations } from '../migrations/migrate.js';
 import { app } from './app.js';
-import { getEnvConfig, isPostgres } from './config/env.js';
-import { getDatabaseAdapter } from './db/adapter.js';
+import { getEnvConfig } from './config/env.js';
+import { closeDatabase } from './db/database.js';
 import { workerQueueService } from './services/workerQueue.js';
 import { logger } from './utils/logger.js';
 
 async function bootstrap(): Promise<void> {
   const config = getEnvConfig();
 
-  logger.info('Initializing Multi-Tenant Messaging Service', {
+  logger.info('Initializing Multi-Tenant Messaging Service (PostgreSQL)', {
     env: config.NODE_ENV,
     port: config.PORT,
-    databaseEngine: isPostgres() ? 'PostgreSQL' : 'SQLite',
-    databaseTarget: isPostgres()
-      ? (config.DATABASE_URL ? '[DATABASE_URL configured]' : `${config.PGHOST}:${config.PGPORT}/${config.PGDATABASE}`)
-      : config.DATABASE_PATH,
+    host: config.PGHOST,
+    database: config.PGDATABASE,
   });
 
   try {
-    // 1. Ensure database connection and run schema migrations
-    await runAllMigrations();
-    logger.info('Database schema migrations applied successfully');
+    // 1. Ensure PostgreSQL database connection and run schema migrations
+    await runMigrations();
+    logger.info('PostgreSQL schema migrations applied successfully');
 
     // 2. Start asynchronous background worker queue
     workerQueueService.start();
@@ -37,7 +35,7 @@ async function bootstrap(): Promise<void> {
       server.close(async () => {
         logger.info('HTTP server closed');
         workerQueueService.stop();
-        await getDatabaseAdapter().close();
+        await closeDatabase();
         logger.info('Graceful shutdown completed');
         process.exit(0);
       });

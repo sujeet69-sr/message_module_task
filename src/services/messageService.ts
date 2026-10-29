@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
+import pg from 'pg';
 import { ForbiddenError, NotFoundError } from '../errors/AppError.js';
 import {
   MessageDTO,
@@ -41,12 +41,12 @@ function toMessageDTO(record: MessageRecord, history?: WebhookEventDTO[]): Messa
 
 export class MessageService {
   /**
-   * Creates a new message with QUEUED status and persists it.
+   * Creates a new message with QUEUED status and persists it in PostgreSQL.
    */
   public async createMessage(
     input: CreateMessageInput,
     authenticatedTenantId?: string,
-    db?: DatabaseSync
+    client?: pg.Pool | pg.PoolClient
   ): Promise<MessageDTO> {
     // If an authenticated tenant is specified via x-tenant-id header, enforce match
     if (authenticatedTenantId && authenticatedTenantId !== input.tenantId) {
@@ -76,12 +76,12 @@ export class MessageService {
       version: 1,
     };
 
-    await messageRepository.create(record, db);
+    await messageRepository.create(record, client);
     metricsService.recordMessageCreated();
 
     // Enqueue message dispatch job to worker queue for asynchronous processing
     try {
-      workerQueueService.enqueue('message-dispatch', {
+      await workerQueueService.enqueue('message-dispatch', {
         messageId: id,
         tenantId: input.tenantId,
         to: input.to,
@@ -97,8 +97,12 @@ export class MessageService {
   /**
    * Retrieves message details and webhook event history with tenant isolation.
    */
-  public async getMessage(messageId: string, tenantId?: string, db?: DatabaseSync): Promise<MessageDTO> {
-    const record = await messageRepository.findById(messageId, db);
+  public async getMessage(
+    messageId: string,
+    tenantId?: string,
+    client?: pg.Pool | pg.PoolClient
+  ): Promise<MessageDTO> {
+    const record = await messageRepository.findById(messageId, client);
     if (!record) {
       throw new NotFoundError(`Message with ID '${messageId}' was not found`);
     }
@@ -108,7 +112,7 @@ export class MessageService {
       throw new NotFoundError(`Message with ID '${messageId}' was not found`);
     }
 
-    const events = await webhookEventRepository.findByMessageId(messageId, db);
+    const events = await webhookEventRepository.findByMessageId(messageId, client);
     const history: WebhookEventDTO[] = events.map((e) => ({
       eventId: e.event_id,
       messageId: e.message_id,
@@ -129,7 +133,7 @@ export class MessageService {
     tenantId: string,
     conversationId: string,
     query: ConversationQueryInput,
-    db?: DatabaseSync
+    client?: pg.Pool | pg.PoolClient
   ): Promise<PaginatedResult<MessageDTO>> {
     const limit = query.limit || 20;
     const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
@@ -139,7 +143,7 @@ export class MessageService {
       conversationId,
       limit,
       cursor,
-      db
+      client
     );
 
     const hasMore = rows.length > limit;

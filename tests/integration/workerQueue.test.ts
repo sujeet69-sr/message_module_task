@@ -6,13 +6,13 @@ import { createTestDatabase, TestDbContext } from '../helpers/testDb.js';
 describe('Worker Queue with Retry & Dead-Letter Queue (DLQ) Tests', () => {
   let testDb: TestDbContext;
 
-  before(() => {
-    testDb = createTestDatabase();
+  before(async () => {
+    testDb = await createTestDatabase();
   });
 
-  after(() => {
+  after(async () => {
     workerQueueService.stop();
-    testDb.cleanup();
+    await testDb.cleanup();
   });
 
   it('Enqueues, processes, and marks jobs as COMPLETED', async () => {
@@ -33,9 +33,10 @@ describe('Worker Queue with Retry & Dead-Letter Queue (DLQ) Tests', () => {
     assert.ok(processed >= 1);
     assert.equal(jobExecuted, true);
 
-    const updatedJob = testDb.db
-      .prepare('SELECT * FROM worker_jobs WHERE id = ?')
-      .get(job.id) as any;
+    const updatedJob = (await testDb.pool.query(
+      'SELECT * FROM worker_jobs WHERE id = $1',
+      [job.id]
+    )).rows[0];
 
     assert.equal(updatedJob.status, 'COMPLETED');
   });
@@ -54,25 +55,28 @@ describe('Worker Queue with Retry & Dead-Letter Queue (DLQ) Tests', () => {
     // Attempt 1: fails, status moves to FAILED, will retry
     await workerQueueService.processNextJobs();
 
-    let jobInDb = testDb.db
-      .prepare('SELECT * FROM worker_jobs WHERE id = ?')
-      .get(job.id) as any;
+    let jobInDb = (await testDb.pool.query(
+      'SELECT * FROM worker_jobs WHERE id = $1',
+      [job.id]
+    )).rows[0];
 
     assert.equal(jobInDb.status, 'FAILED');
     assert.equal(jobInDb.attempts, 1);
     assert.ok(jobInDb.error_message.includes('Simulated transient failure'));
 
-    // Fast-forward next_run_at to simulate backoff elapsing
-    testDb.db
-      .prepare("UPDATE worker_jobs SET next_run_at = datetime('now', '-1 minute') WHERE id = ?")
-      .run(job.id);
+    // Fast-forward next_run_at to simulate backoff elapsing (PostgreSQL syntax)
+    await testDb.pool.query(
+      "UPDATE worker_jobs SET next_run_at = (NOW() - INTERVAL '1 minute')::text WHERE id = $1",
+      [job.id]
+    );
 
     // Attempt 2: reaches max attempts (2), routes to DEAD_LETTER
     await workerQueueService.processNextJobs();
 
-    jobInDb = testDb.db
-      .prepare('SELECT * FROM worker_jobs WHERE id = ?')
-      .get(job.id) as any;
+    jobInDb = (await testDb.pool.query(
+      'SELECT * FROM worker_jobs WHERE id = $1',
+      [job.id]
+    )).rows[0];
 
     assert.equal(jobInDb.status, 'DEAD_LETTER');
     assert.equal(jobInDb.attempts, 2);

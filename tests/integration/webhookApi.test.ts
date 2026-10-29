@@ -7,12 +7,12 @@ import { createTestDatabase, TestDbContext } from '../helpers/testDb.js';
 describe('Webhook Provider API Integration Tests', () => {
   let testDb: TestDbContext;
 
-  before(() => {
-    testDb = createTestDatabase();
+  before(async () => {
+    testDb = await createTestDatabase();
   });
 
-  after(() => {
-    testDb.cleanup();
+  after(async () => {
+    await testDb.cleanup();
   });
 
   it('Successfully processes normal status progression: QUEUED -> SENT -> DELIVERED -> READ', async () => {
@@ -127,11 +127,12 @@ describe('Webhook Provider API Integration Tests', () => {
     assert.equal(thirdCall.body.data.duplicate, true);
 
     // Verify DB only has 1 event record for evt-idem-unique-1
-    const countRow = testDb.db
-      .prepare('SELECT COUNT(*) as cnt FROM webhook_events WHERE event_id = ?')
-      .get('evt-idem-unique-1') as { cnt: number };
+    const countRow = await testDb.pool.query(
+      'SELECT COUNT(*) as cnt FROM webhook_events WHERE event_id = $1',
+      ['evt-idem-unique-1']
+    );
 
-    assert.equal(Number(countRow.cnt), 1);
+    assert.equal(Number(countRow.rows[0].cnt), 1);
   });
 
   it('Handles out-of-order events: prevents backwards status regression while preserving timestamps', async () => {
@@ -201,9 +202,10 @@ describe('Webhook Provider API Integration Tests', () => {
     assert.ok(res.body.message.includes(unknownMessageId));
 
     // Verify unmatched event is recorded in DB for audit trail
-    const savedEvent = testDb.db
-      .prepare('SELECT * FROM webhook_events WHERE event_id = ?')
-      .get('evt-unknown-msg-1') as any;
+    const savedEvent = (await testDb.pool.query(
+      'SELECT * FROM webhook_events WHERE event_id = $1',
+      ['evt-unknown-msg-1']
+    )).rows[0];
 
     assert.ok(savedEvent);
     assert.equal(savedEvent.outcome, 'UNMATCHED_MESSAGE');

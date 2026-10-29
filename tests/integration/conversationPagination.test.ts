@@ -7,12 +7,12 @@ import { createTestDatabase, TestDbContext } from '../helpers/testDb.js';
 describe('Conversation Messages & Tenant Isolation Integration Tests', () => {
   let testDb: TestDbContext;
 
-  before(() => {
-    testDb = createTestDatabase();
+  before(async () => {
+    testDb = await createTestDatabase();
   });
 
-  after(() => {
-    testDb.cleanup();
+  after(async () => {
+    await testDb.cleanup();
   });
 
   it('Requires x-tenant-id header returning 401 Unauthorized if missing', async () => {

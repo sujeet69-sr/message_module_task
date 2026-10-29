@@ -1,43 +1,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { getEnvConfig, isPostgres } from '../src/config/env.js';
-import { runPostgresMigrations } from '../src/db/postgres.js';
+import pg from 'pg';
+import { getDatabasePool, withTransaction } from '../src/db/database.js';
+import { logger } from '../src/utils/logger.js';
 
-export function runMigrations(dbInstance?: DatabaseSync): void {
-  const env = getEnvConfig();
-  const dbPath = env.DATABASE_PATH;
+export async function runMigrations(customPool?: pg.Pool): Promise<void> {
+  const pool = customPool || getDatabasePool();
 
-  let db: DatabaseSync;
-  let shouldClose = false;
-
-  if (dbInstance) {
-    db = dbInstance;
-  } else {
-    const dir = path.dirname(dbPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    db = new DatabaseSync(dbPath);
-    shouldClose = true;
-  }
-
-  // Enable WAL mode and foreign key constraints
-  db.exec('PRAGMA journal_mode = WAL;');
-  db.exec('PRAGMA foreign_keys = ON;');
-
-  // Ensure migration tracking table exists
-  db.exec(`
+  // 1. Ensure migration tracking table exists
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+      name VARCHAR(255) NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP::text
     );
   `);
 
   const migrationsDir = path.resolve(__dirname);
   const files = fs.readdirSync(migrationsDir)
-    .filter((f) => f.endsWith('.sql') && !f.includes('postgres'))
+    .filter((f) => f.endsWith('.sql'))
     .sort();
 
   for (const file of files) {
@@ -45,51 +26,37 @@ export function runMigrations(dbInstance?: DatabaseSync): void {
     if (!versionMatch) continue;
 
     const version = parseInt(versionMatch[1], 10);
-    const existing = db.prepare('SELECT version FROM schema_migrations WHERE version = ?').get(version);
+    const existing = await pool.query('SELECT version FROM schema_migrations WHERE version = $1', [version]);
 
-    if (!existing) {
+    if (existing.rows.length === 0) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
-      
-      db.exec('BEGIN IMMEDIATE;');
-      try {
-        db.exec(sql);
-        db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
-          .run(version, file, new Date().toISOString());
-        db.exec('COMMIT;');
-        console.log(`[Migrations] Applied SQLite migration: ${file}`);
-      } catch (err) {
-        db.exec('ROLLBACK;');
-        console.error(`[Migrations] Failed applying migration ${file}:`, err);
-        throw err;
-      }
-    }
-  }
 
-  if (shouldClose) {
-    db.close();
+      await withTransaction(async (client) => {
+        await client.query(sql);
+        await client.query(
+          'INSERT INTO schema_migrations (version, name, applied_at) VALUES ($1, $2, $3)',
+          [version, file, new Date().toISOString()]
+        );
+      });
+
+      logger.info(`[PostgreSQL Migrations] Applied migration: ${file}`);
+      console.log(`[PostgreSQL Migrations] Applied migration: ${file}`);
+    }
   }
 }
 
-export async function runAllMigrations(): Promise<void> {
-  if (isPostgres()) {
-    console.log('[Migrations] Detected PostgreSQL configuration, executing PostgreSQL migrations...');
-    await runPostgresMigrations();
-    console.log('[Migrations] PostgreSQL migrations completed successfully.');
-  } else {
-    console.log('[Migrations] Detected SQLite configuration, executing SQLite migrations...');
-    runMigrations();
-    console.log('[Migrations] SQLite migrations completed successfully.');
-  }
+export async function runAllMigrations(customPool?: pg.Pool): Promise<void> {
+  await runMigrations(customPool);
 }
 
 if (process.argv[1] && (process.argv[1].endsWith('migrate.ts') || process.argv[1].endsWith('migrate.js'))) {
-  runAllMigrations()
+  runMigrations()
     .then(() => {
-      console.log('[Migrations] All migrations completed successfully.');
+      console.log('[PostgreSQL Migrations] All migrations completed successfully.');
       process.exit(0);
     })
     .catch((error) => {
-      console.error('[Migrations] Migration failed:', error);
+      console.error('[PostgreSQL Migrations] Migration failed:', error);
       process.exit(1);
     });
 }

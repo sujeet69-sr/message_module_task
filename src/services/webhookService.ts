@@ -1,4 +1,5 @@
-import { DatabaseSync } from 'node:sqlite';
+import pg from 'pg';
+import { withTransaction } from '../db/database.js';
 import { NotFoundError } from '../errors/AppError.js';
 import {
   EventOutcome,
@@ -125,13 +126,16 @@ export interface WebhookProcessResult {
 
 export class WebhookService {
   /**
-   * Processes a provider webhook event idempotently within a database transaction.
+   * Processes a provider webhook event idempotently within a PostgreSQL transaction.
    */
-  public async processWebhookEvent(input: WebhookEventInput, db?: DatabaseSync): Promise<WebhookProcessResult> {
+  public async processWebhookEvent(
+    input: WebhookEventInput,
+    client?: pg.Pool | pg.PoolClient
+  ): Promise<WebhookProcessResult> {
     const now = new Date().toISOString();
 
     // Step 1: Idempotency Check on eventId
-    const existingEvent = await webhookEventRepository.findByEventId(input.eventId, db);
+    const existingEvent = await webhookEventRepository.findByEventId(input.eventId, client);
     if (existingEvent) {
       logger.info('Duplicate webhook event detected and ignored', {
         eventId: input.eventId,
@@ -141,7 +145,7 @@ export class WebhookService {
 
       metricsService.recordDuplicateWebhook();
 
-      const message = await messageRepository.findById(input.messageId, db);
+      const message = await messageRepository.findById(input.messageId, client);
 
       return {
         eventId: input.eventId,
@@ -155,7 +159,7 @@ export class WebhookService {
     }
 
     // Step 2: Message Existence Check & Unmatched Event Strategy
-    const message = await messageRepository.findById(input.messageId, db);
+    const message = await messageRepository.findById(input.messageId, client);
     if (!message) {
       logger.warn('Webhook event received for unknown message ID', {
         eventId: input.eventId,
@@ -175,76 +179,86 @@ export class WebhookService {
         outcome: 'UNMATCHED_MESSAGE',
         notes: `Message with ID ${input.messageId} does not exist in messages table`,
       };
-      await webhookEventRepository.create(unmatchedEvent, db);
+      await webhookEventRepository.create(unmatchedEvent, client);
       metricsService.recordUnmatchedWebhook();
 
       throw new NotFoundError(`Message with ID ${input.messageId} was not found`);
     }
 
-    // Step 3: Evaluate State Transition and Timestamps
-    const decision = evaluateStatusTransition(message, input.status, input.occurredAt);
+    // Step 3: Atomic Transaction for Event Persistence & Status Update
+    const executeInTransaction = async (txClient: pg.PoolClient) => {
+      // Evaluate State Transition and Timestamps
+      const decision = evaluateStatusTransition(message, input.status, input.occurredAt);
 
-    // Persist the Webhook Event record
-    const eventRecord: WebhookEventRecord = {
-      event_id: input.eventId,
-      message_id: input.messageId,
-      status: input.status,
-      occurred_at: input.occurredAt,
-      received_at: now,
-      processed_at: now,
-      payload: JSON.stringify(input),
-      outcome: decision.outcome,
-      notes: decision.notes,
-    };
-    await webhookEventRepository.create(eventRecord, db);
+      // Persist the Webhook Event record
+      const eventRecord: WebhookEventRecord = {
+        event_id: input.eventId,
+        message_id: input.messageId,
+        status: input.status,
+        occurred_at: input.occurredAt,
+        received_at: now,
+        processed_at: now,
+        payload: JSON.stringify(input),
+        outcome: decision.outcome,
+        notes: decision.notes,
+      };
+      await webhookEventRepository.create(eventRecord, txClient);
 
-    // Apply updates to Message record if required
-    const updates: Partial<MessageRecord> = {
-      updated_at: now,
-      ...decision.timestampUpdates,
-    };
+      // Apply updates to Message record if required
+      const updates: Partial<MessageRecord> = {
+        updated_at: now,
+        ...decision.timestampUpdates,
+      };
 
-    if (decision.shouldUpdateStatus) {
-      updates.status = decision.targetStatus;
-      if (input.failureReason) {
-        updates.failure_reason = input.failureReason;
+      if (decision.shouldUpdateStatus) {
+        updates.status = decision.targetStatus;
+        if (input.failureReason) {
+          updates.failure_reason = input.failureReason;
+        }
       }
-    }
 
-    // Perform optimistic concurrency update
-    const updated = await messageRepository.updateWithOptimisticLock(
-      message.id,
-      updates,
-      message.version,
-      db
-    );
+      // Perform optimistic concurrency update
+      const updated = await messageRepository.updateWithOptimisticLock(
+        message.id,
+        updates,
+        message.version,
+        txClient
+      );
 
-    if (!updated) {
-      logger.warn('Optimistic concurrency lock fallback to direct update in transaction', {
-        messageId: message.id,
+      if (!updated) {
+        logger.warn('Optimistic concurrency lock fallback to direct update in transaction', {
+          messageId: message.id,
+        });
+        await messageRepository.updateDirect(message.id, updates, txClient);
+      }
+
+      logger.info('Webhook event processed successfully', {
+        eventId: input.eventId,
+        messageId: input.messageId,
+        previousStatus: message.status,
+        newStatus: decision.targetStatus,
+        outcome: decision.outcome,
       });
-      await messageRepository.updateDirect(message.id, updates, db);
+
+      metricsService.recordWebhookProcessed(decision.outcome);
+
+      return {
+        eventId: input.eventId,
+        messageId: input.messageId,
+        status: input.status,
+        outcome: decision.outcome,
+        duplicate: false,
+        messageStatus: decision.targetStatus,
+        notes: decision.notes,
+      };
+    };
+
+    if (client && 'release' in client) {
+      // Already inside a transaction client
+      return executeInTransaction(client as pg.PoolClient);
     }
 
-    logger.info('Webhook event processed successfully', {
-      eventId: input.eventId,
-      messageId: input.messageId,
-      previousStatus: message.status,
-      newStatus: decision.targetStatus,
-      outcome: decision.outcome,
-    });
-
-    metricsService.recordWebhookProcessed(decision.outcome);
-
-    return {
-      eventId: input.eventId,
-      messageId: input.messageId,
-      status: input.status,
-      outcome: decision.outcome,
-      duplicate: false,
-      messageStatus: decision.targetStatus,
-      notes: decision.notes,
-    };
+    return withTransaction(executeInTransaction);
   }
 }
 

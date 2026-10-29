@@ -1,6 +1,6 @@
-# Multi-Tenant Messaging Platform API
+# Multi-Tenant Messaging Platform API (PostgreSQL)
 
-A robust, production-grade REST API for a multi-tenant messaging platform built with Node.js, TypeScript, Express, and persistent SQLite (with zero external runtime dependencies). The service models message lifecycles, guarantees event deduplication (idempotency), deterministically resolves out-of-order provider webhooks without backward state regression, enforces tenant isolation, and features an in-process persistent worker queue with exponential backoff and a Dead-Letter Queue (DLQ).
+A production-grade REST API for a multi-tenant messaging platform built with Node.js, TypeScript, Express, and PostgreSQL. The service models message lifecycles, guarantees event deduplication (idempotency), deterministically resolves out-of-order provider webhooks without backward state regression, enforces tenant isolation, and features an in-process persistent worker queue with exponential backoff and a Dead-Letter Queue (DLQ).
 
 ---
 
@@ -52,8 +52,8 @@ A robust, production-grade REST API for a multi-tenant messaging platform built 
               │  └───────────────────┬───────────────────────┘  │
               └──────────────────────┼──────────────────────────┘
                                      │
-           SQLite Transactions       ▼       In-process Worker
-         (BEGIN IMMEDIATE / WAL) ┌───────┐   (Exponential Backoff & DLQ)
+           PostgreSQL Transactions   ▼       In-process Worker
+            (BEGIN ... COMMIT)   ┌───────┐   (Exponential Backoff & DLQ)
         ┌───────────────────────►│  DB   │◄─────────────────────────────┐
         │                        └───────┘                              │
 ┌───────┴────────┐            ┌─────────────┐               ┌───────────┴──────────┐
@@ -70,6 +70,7 @@ A robust, production-grade REST API for a multi-tenant messaging platform built 
 
 ### Prerequisites
 - **Node.js**: v20+ or v22+ (tested and built on Node v24 LTS)
+- **PostgreSQL**: 14+ (tested on local PostgreSQL 18)
 - **npm**: v10+
 - **Docker** *(Optional, for containerized run)*
 
@@ -82,42 +83,38 @@ npm install
 ```
 
 ### 2. Environment Configuration
-Copy the sample environment file with placeholder values:
+Copy the sample environment file and configure your PostgreSQL connection:
 ```bash
 cp .env.example .env
 ```
 
-#### Option A: Using SQLite (Default, Zero-Setup)
+Configuration in `.env`:
 ```env
 PORT=3000
 NODE_ENV=development
-DATABASE_PATH=./data/messaging.db
-LOG_LEVEL=info
-```
 
-#### Option B: Connecting to Local PostgreSQL
-To connect to your local PostgreSQL database, either specify `DATABASE_URL`:
-```env
-DATABASE_URL=postgresql://postgres:your_password@localhost:5432/messaging_db
-```
-Or specify individual parameters:
-```env
-DB_CLIENT=postgres
+# Option A: Connection URL (Recommended)
+DATABASE_URL=postgresql://postgres:password@localhost:5432/messaging_db
+
+# Option B: Individual Parameters
 PGHOST=localhost
 PGPORT=5432
 PGUSER=postgres
-PGPASSWORD=your_password
+PGPASSWORD=password
 PGDATABASE=messaging_db
-```
-*(Note: Create the database in PostgreSQL if it doesn't already exist: `CREATE DATABASE messaging_db;`)*
+
+LOG_LEVEL=info
+WORKER_ENABLED=true
 WORKER_CONCURRENCY=2
 WORKER_POLL_INTERVAL_MS=500
 WORKER_MAX_RETRIES=3
 WORKER_BACKOFF_BASE_MS=1000
 ```
 
+*(Ensure the database exists in your PostgreSQL instance: `CREATE DATABASE messaging_db;`)*
+
 ### 3. Run Database Migrations
-Database migrations are reproducible and can be executed via:
+Execute the migrations against PostgreSQL:
 ```bash
 npm run migrate
 ```
@@ -141,13 +138,13 @@ npm run build
 The server will start listening at `http://localhost:3000`.
 
 ### 6. Run Automated Tests
-Execute the full test suite (31 unit & integration tests covering success paths, edge cases, out-of-order events, idempotency, restart persistence, and concurrency):
+Execute the full test suite (31 unit & integration tests executed sequentially on PostgreSQL):
 ```bash
 npm test
 ```
 
 ### 7. Run the Local Webhook Simulation Script
-While the server is running, execute the automated simulation script to simulate real-world webhook events locally:
+While the server is running, execute the simulation script to test the complete lifecycle:
 ```bash
 npm run simulate
 ```
@@ -369,7 +366,7 @@ npm run simulate
     "uptime": 128.45,
     "database": {
       "status": "connected",
-      "engine": "sqlite"
+      "engine": "postgresql"
     },
     "version": "1.0.0"
   }
@@ -402,7 +399,7 @@ npm run simulate
 
 ## Database Schema & Migrations
 
-The database setup uses SQLite in **Write-Ahead Logging (WAL)** mode with immediate transactions to guarantee crash safety, reproducible persistence across restarts, and high-concurrency support.
+The database setup uses PostgreSQL with connection pooling (`pg.Pool`) and ACID transactions to guarantee crash safety, reproducible persistence across restarts, and high-concurrency support.
 
 ### Tables & Indexes
 
@@ -410,18 +407,18 @@ The database setup uses SQLite in **Write-Ahead Logging (WAL)** mode with immedi
 -- Schema Migrations Tracking
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    name VARCHAR(255) NOT NULL,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP::text
 );
 
 -- Core Messages Table
 CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL,
-    conversation_id TEXT NOT NULL,
-    recipient_to TEXT NOT NULL,
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    conversation_id VARCHAR(128) NOT NULL,
+    recipient_to VARCHAR(32) NOT NULL,
     text TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('QUEUED', 'SENT', 'DELIVERED', 'READ', 'FAILED')),
+    status VARCHAR(32) NOT NULL CHECK (status IN ('QUEUED', 'SENT', 'DELIVERED', 'READ', 'FAILED')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     queued_at TEXT NOT NULL,
@@ -434,33 +431,37 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 -- Composite index for fast tenant-scoped, cursor-based pagination
-CREATE INDEX idx_messages_tenant_conv_created 
+CREATE INDEX IF NOT EXISTS idx_messages_tenant_conv_created 
 ON messages (tenant_id, conversation_id, created_at ASC, id ASC);
 
-CREATE INDEX idx_messages_tenant_id 
+CREATE INDEX IF NOT EXISTS idx_messages_tenant_id 
 ON messages (tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_messages_status 
+ON messages (status);
 
 -- Webhook Events Table (Enforces unique eventId for idempotency)
 CREATE TABLE IF NOT EXISTS webhook_events (
-    event_id TEXT PRIMARY KEY,
-    message_id TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('SENT', 'DELIVERED', 'READ', 'FAILED')),
+    event_id VARCHAR(128) PRIMARY KEY,
+    message_id VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL CHECK (status IN ('SENT', 'DELIVERED', 'READ', 'FAILED')),
     occurred_at TEXT NOT NULL,
     received_at TEXT NOT NULL,
     processed_at TEXT,
     payload TEXT NOT NULL,
-    outcome TEXT NOT NULL,
+    outcome VARCHAR(64) NOT NULL,
     notes TEXT
 );
 
-CREATE INDEX idx_webhook_events_message_id ON webhook_events (message_id);
+CREATE INDEX IF NOT EXISTS idx_webhook_events_message_id ON webhook_events (message_id);
+CREATE INDEX IF NOT EXISTS idx_webhook_events_occurred_at ON webhook_events (occurred_at);
 
 -- Persistent Asynchronous Worker Queue & Dead Letter Queue (DLQ)
 CREATE TABLE IF NOT EXISTS worker_jobs (
-    id TEXT PRIMARY KEY,
-    queue TEXT NOT NULL,
+    id VARCHAR(64) PRIMARY KEY,
+    queue VARCHAR(64) NOT NULL,
     payload TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'DEAD_LETTER')),
+    status VARCHAR(32) NOT NULL CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'DEAD_LETTER')),
     attempts INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 3,
     next_run_at TEXT NOT NULL,
@@ -469,7 +470,7 @@ CREATE TABLE IF NOT EXISTS worker_jobs (
     updated_at TEXT NOT NULL
 );
 
-CREATE INDEX idx_worker_jobs_poll ON worker_jobs (queue, status, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_worker_jobs_poll ON worker_jobs (queue, status, next_run_at);
 ```
 
 ---
@@ -479,7 +480,7 @@ CREATE INDEX idx_worker_jobs_poll ON worker_jobs (queue, status, next_run_at);
 ### A. Idempotency Strategy
 External webhook providers (e.g. WhatsApp, Meta, Twilio, Stripe) use at-least-once delivery, which guarantees duplicate transmissions when acknowledgments are lost or network connections reset.
 
-1. **Unique Deduplication Key**: The database schema declares `event_id TEXT PRIMARY KEY` on `webhook_events`.
+1. **Unique Deduplication Key**: The database schema declares `event_id VARCHAR(128) PRIMARY KEY` on `webhook_events`.
 2. **Transaction-Safe Deduplication**: When a webhook arrives, the service first queries `webhook_events` by `event_id`. If found, processing immediately short-circuits, increments the `webhooksDuplicatesIgnored` metric, and returns `HTTP 200 OK` with `outcome: "IGNORED_DUPLICATE"` and `duplicate: true`.
 3. **No Duplicate Business Side-Effects**: Message statuses are never re-evaluated and timestamps are not altered on repeated events.
 4. **Provider-Friendly Acknowledgment**: Returning `HTTP 200` signals to the external webhook dispatcher that the event was received and recorded, causing the provider to cease further retries.
@@ -534,7 +535,7 @@ Statuses are assigned progressive ordinal weights:
    - In production platforms with API Gateway layers (e.g., Kong, AWS API Gateway), incoming tenant JWTs are validated and decrypted at the edge, injecting the authenticated tenant ID into the `x-tenant-id` header.
    - For this exercise, `x-tenant-id` acts as the verified authenticated identity.
 2. **Scope Enforcement on Data Access**:
-   - `GET /api/v1/conversations/:conversationId/messages`: Requires `x-tenant-id`. The SQL query filters strictly by `WHERE tenant_id = ? AND conversation_id = ?`. Even if Tenant A discovers Tenant B's `conversationId`, Tenant A only accesses messages belonging to Tenant A.
+   - `GET /api/v1/conversations/:conversationId/messages`: Requires `x-tenant-id`. The SQL query filters strictly by `WHERE tenant_id = $1 AND conversation_id = $2`. Even if Tenant A discovers Tenant B's `conversationId`, Tenant A only accesses messages belonging to Tenant A.
    - `GET /api/v1/messages/:messageId`: If `x-tenant-id` is supplied and belongs to another tenant, the API responds with `404 Not Found` rather than `403 Forbidden` to prevent leaking the existence of IDs across tenants.
    - `POST /api/v1/messages`: If `x-tenant-id` is provided in the header, the service validates that `header.x-tenant-id === body.tenantId`, rejecting any spoofing attempts with `403 Forbidden`.
 
@@ -582,7 +583,7 @@ To scale from thousands of requests per second to millions:
 1. **Partitioned Messaging Broker (Kafka / Pulsar)**:
    - Webhook endpoints accept incoming events, persist raw receipts to Kafka (`webhooks.raw`), and return `202 Accepted` or `200 OK` in `< 5ms`.
    - **Partitioning Key**: Events are keyed by `tenant_id:conversation_id`. This guarantees **strict linear ordering** for events of the same conversation while allowing massive horizontal parallel consumption across partitions.
-2. **Distributed Distributed Database Sharding**:
+2. **Distributed Database Sharding**:
    - Multi-tenant data is horizontally sharded by `tenant_id` using Citus or CockroachDB. Queries for a tenant's conversation execute locally on a single shard, completely avoiding cross-node distributed joins.
 3. **Transactional Outbox Pattern**:
    - Outbound dispatch events are written to a database `outbox` table in the same transaction as message creation, then streamed to Kafka by a Debezium CDC (Change Data Capture) connector.
@@ -597,12 +598,12 @@ To scale from thousands of requests per second to millions:
 - **Dead-Letter Queue (DLQ)**: Jobs failing more than `max_attempts` (default: 3) transition to `status = 'DEAD_LETTER'` with full error logging for inspection.
 
 ### Concurrency Control & Optimistic Locking
-- SQLite operations utilize `BEGIN IMMEDIATE` to acquire a write lock before reading, preventing concurrent deadlock.
+- PostgreSQL transactions execute with `BEGIN` / `COMMIT` / `ROLLBACK`.
 - `messages` rows maintain an atomic `version` column. Status updates execute:
   ```sql
   UPDATE messages 
-  SET status = ?, version = version + 1 
-  WHERE id = ? AND version = ?
+  SET status = $1, version = version + 1 
+  WHERE id = $2 AND version = $3
   ```
   Guarantees zero lost updates or race conditions during high-concurrency bursts.
 
@@ -611,7 +612,7 @@ To scale from thousands of requests per second to millions:
 - **Security & PII Redaction**: Structured JSON logs automatically mask phone numbers (e.g. `+9198****210`), redact sensitive message text lengths (`[REDACTED_TEXT len=22]`), and scrub auth tokens and secrets.
 
 ### Docker & Docker Compose
-A multi-stage `Dockerfile` and `docker-compose.yml` are included for containerized deployment:
+A multi-stage `Dockerfile` and `docker-compose.yml` (featuring PostgreSQL 16 Alpine + API) are included:
 ```bash
 docker compose up --build -d
 ```
@@ -634,10 +635,10 @@ The repository includes a comprehensive automated test suite (31 tests across 9 
 | `tests/integration/messageApi.test.ts` | `POST /messages` creation, `GET /messages/:id` retrieval, tenant mismatch protection, and 400 validation error formatting. |
 | `tests/integration/webhookApi.test.ts` | Normal status progression, idempotent duplicate deduplication (`eventId`), out-of-order event handling, and 404 unmatched event logging. |
 | `tests/integration/conversationPagination.test.ts` | Strict multi-tenant isolation, cursor pagination over 25+ messages with stable ordering. |
-| `tests/integration/persistence.test.ts` | Simulates server crash/restart by closing and re-opening database file; verifies data integrity. |
+| `tests/integration/persistence.test.ts` | Simulates server crash/restart against PostgreSQL; verifies data integrity. |
 | `tests/integration/concurrency.test.ts` | Dispatches 10 simultaneous concurrent webhook updates to stress-test transaction locking and optimistic versioning. |
 | `tests/integration/workerQueue.test.ts` | Job execution, exponential retry backoff, and Dead-Letter Queue (DLQ) routing. |
-| `tests/integration/health.test.ts` | Health check endpoint, database live check, and telemetry metrics counter verification. |
+| `tests/integration/health.test.ts` | Health check endpoint, PostgreSQL live check, and telemetry metrics counter verification. |
 
 Run tests:
 ```bash
@@ -649,11 +650,8 @@ npm test
 ## Trade-offs and Limitations
 
 1. **In-Process Worker vs. External Broker**:
-   - *Current Implementation*: Uses persistent SQLite table `worker_jobs` with polling.
-   - *Trade-off*: Zero external dependencies and fast setup, but throughput is limited by single-instance compute. In large clusters, a dedicated broker (Kafka/RabbitMQ) should be used.
+   - *Current Implementation*: Uses persistent PostgreSQL table `worker_jobs` with polling.
+   - *Trade-off*: Zero external queue dependencies, but in large high-throughput clusters, a dedicated broker (Kafka/RabbitMQ) is recommended.
 2. **Tenant Authentication via Headers**:
    - *Current Implementation*: Relies on `x-tenant-id` header assuming trusted upstream API Gateway.
    - *Trade-off*: Simplifies local testing without requiring OAuth2/OIDC servers, but requires an API Gateway in front of the service in production to avoid client header forgery.
-3. **SQLite Concurrency Model**:
-   - *Current Implementation*: Configured with WAL mode and `busy_timeout = 5000ms`.
-   - *Trade-off*: Handles thousands of concurrent reads and serialized high-throughput writes on a single node without external database setup. For multi-node horizontal scaling, PostgreSQL or CockroachDB is required.

@@ -1,86 +1,99 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import pg from 'pg';
 import { getEnvConfig } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 
-let dbInstance: DatabaseSync | null = null;
-let currentDbPath: string | null = null;
+const { Pool } = pg;
 
-export function getDatabase(customPath?: string): DatabaseSync {
-  const targetPath = customPath || getEnvConfig().DATABASE_PATH;
+let poolInstance: pg.Pool | null = null;
 
-  if (dbInstance && currentDbPath === targetPath) {
-    return dbInstance;
+export function getDatabasePool(customConnectionString?: string): pg.Pool {
+  if (poolInstance) {
+    return poolInstance;
   }
 
-  if (dbInstance) {
-    try {
-      dbInstance.close();
-    } catch {
-      // ignore
-    }
+  const config = getEnvConfig();
+  const connectionString = customConnectionString || config.DATABASE_URL;
+
+  if (connectionString) {
+    logger.info('Initializing PostgreSQL connection pool via connection string');
+    poolInstance = new Pool({
+      connectionString,
+      max: 20,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000,
+    });
+  } else {
+    logger.info('Initializing PostgreSQL connection pool via environment variables', {
+      host: config.PGHOST,
+      port: config.PGPORT,
+      user: config.PGUSER,
+      database: config.PGDATABASE,
+    });
+    poolInstance = new Pool({
+      host: config.PGHOST,
+      port: config.PGPORT,
+      user: config.PGUSER,
+      password: config.PGPASSWORD,
+      database: config.PGDATABASE,
+      max: 20,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000,
+    });
   }
 
-  if (targetPath !== ':memory:') {
-    const dir = path.dirname(targetPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-  }
+  poolInstance.on('error', (err) => {
+    logger.error('Unexpected error on idle PostgreSQL client', { error: err.message });
+  });
 
-  logger.info('Opening SQLite database connection', { path: targetPath });
-  const db = new DatabaseSync(targetPath);
-
-  // Configure SQLite for high concurrency and integrity
-  db.exec('PRAGMA journal_mode = WAL;');
-  db.exec('PRAGMA synchronous = NORMAL;');
-  db.exec('PRAGMA foreign_keys = ON;');
-  db.exec('PRAGMA busy_timeout = 5000;');
-
-  dbInstance = db;
-  currentDbPath = targetPath;
-
-  return dbInstance;
+  return poolInstance;
 }
 
-export function closeDatabase(): void {
-  if (dbInstance) {
+export async function closeDatabase(): Promise<void> {
+  if (poolInstance) {
     try {
-      dbInstance.close();
+      await poolInstance.end();
+      logger.info('PostgreSQL connection pool closed');
     } catch (err: any) {
-      logger.error('Error closing database', { error: err.message });
+      logger.error('Error closing PostgreSQL pool', { error: err.message });
     } finally {
-      dbInstance = null;
-      currentDbPath = null;
+      poolInstance = null;
     }
   }
 }
 
-export function withTransaction<T>(action: (db: DatabaseSync) => T, db?: DatabaseSync): T {
-  const activeDb = db || getDatabase();
-  activeDb.exec('BEGIN IMMEDIATE;');
+export function resetDatabasePool(): void {
+  poolInstance = null;
+}
+
+export async function checkDatabaseHealth(): Promise<boolean> {
   try {
-    const result = action(activeDb);
-    activeDb.exec('COMMIT;');
+    const pool = getDatabasePool();
+    const result = await pool.query('SELECT 1 as alive;');
+    return result.rows?.[0]?.alive === 1;
+  } catch (err: any) {
+    logger.error('PostgreSQL health check failed', { error: err.message });
+    return false;
+  }
+}
+
+export async function withTransaction<T>(
+  action: (client: pg.PoolClient) => Promise<T>
+): Promise<T> {
+  const pool = getDatabasePool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await action(client);
+    await client.query('COMMIT');
     return result;
   } catch (error) {
     try {
-      activeDb.exec('ROLLBACK;');
+      await client.query('ROLLBACK');
     } catch (rollbackErr: any) {
-      logger.error('Failed to rollback transaction', { error: rollbackErr.message });
+      logger.error('Failed to rollback PostgreSQL transaction', { error: rollbackErr.message });
     }
     throw error;
-  }
-}
-
-export function checkDatabaseHealth(db?: DatabaseSync): boolean {
-  try {
-    const activeDb = db || getDatabase();
-    const result = activeDb.prepare('SELECT 1 as alive;').get() as { alive?: number } | undefined;
-    return result?.alive === 1;
-  } catch (err: any) {
-    logger.error('Database health check failed', { error: err.message });
-    return false;
+  } finally {
+    client.release();
   }
 }

@@ -1,44 +1,45 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import pg from 'pg';
 import { runMigrations } from '../../migrations/migrate.js';
-import { resetDatabaseAdapter } from '../../src/db/adapter.js';
-import { closeDatabase, getDatabase } from '../../src/db/database.js';
+import { closeDatabase, getDatabasePool, resetDatabasePool } from '../../src/db/database.js';
 
 export interface TestDbContext {
-  dbPath: string;
-  db: DatabaseSync;
-  cleanup: () => void;
+  pool: pg.Pool;
+  cleanup: () => Promise<void>;
+  truncateTables: () => Promise<void>;
 }
 
-export function createTestDatabase(): TestDbContext {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'msg-api-test-'));
-  const dbPath = path.join(tempDir, 'test.db');
-
-  process.env.DATABASE_PATH = dbPath;
-  delete process.env.DATABASE_URL;
-  delete process.env.DB_CLIENT;
+export async function createTestDatabase(): Promise<TestDbContext> {
+  // Use messaging_db_test or configured test database
+  process.env.NODE_ENV = 'test';
   process.env.LOG_LEVEL = 'fatal'; // silence logs during tests
+  process.env.PGDATABASE = process.env.TEST_PGDATABASE || 'messaging_db_test';
+  process.env.PGUSER = process.env.PGUSER || 'postgres';
+  process.env.PGPASSWORD = process.env.PGPASSWORD || 'password';
+  process.env.PGHOST = process.env.PGHOST || 'localhost';
+  process.env.PGPORT = process.env.PGPORT || '5432';
 
-  closeDatabase();
-  resetDatabaseAdapter();
-  const db = getDatabase(dbPath);
-  runMigrations(db);
+  if (!process.env.DATABASE_URL) {
+    process.env.DATABASE_URL = `postgresql://${process.env.PGUSER}:${process.env.PGPASSWORD}@${process.env.PGHOST}:${process.env.PGPORT}/${process.env.PGDATABASE}`;
+  }
+
+  await closeDatabase();
+  resetDatabasePool();
+
+  const pool = getDatabasePool();
+  await runMigrations(pool);
+
+  // Truncate tables for a clean slate
+  await pool.query('TRUNCATE TABLE messages, webhook_events, worker_jobs CASCADE;');
 
   return {
-    dbPath,
-    db,
-    cleanup: () => {
-      closeDatabase();
-      resetDatabaseAdapter();
-      try {
-        if (fs.existsSync(tempDir)) {
-          fs.rmSync(tempDir, { recursive: true, force: true });
-        }
-      } catch {
-        // ignore on windows locked files
-      }
+    pool,
+    truncateTables: async () => {
+      await pool.query('TRUNCATE TABLE messages, webhook_events, worker_jobs CASCADE;');
+    },
+    cleanup: async () => {
+      await pool.query('TRUNCATE TABLE messages, webhook_events, worker_jobs CASCADE;');
+      await closeDatabase();
+      resetDatabasePool();
     },
   };
 }

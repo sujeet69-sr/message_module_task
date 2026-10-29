@@ -7,12 +7,12 @@ import { createTestDatabase, TestDbContext } from '../helpers/testDb.js';
 describe('Concurrency and Simultaneous Status Updates Integration Tests', () => {
   let testDb: TestDbContext;
 
-  before(() => {
-    testDb = createTestDatabase();
+  before(async () => {
+    testDb = await createTestDatabase();
   });
 
-  after(() => {
-    testDb.cleanup();
+  after(async () => {
+    await testDb.cleanup();
   });
 
   it('Handles simultaneous concurrent webhook events safely without data corruption', async () => {
@@ -59,11 +59,12 @@ describe('Concurrency and Simultaneous Status Updates Integration Tests', () => 
     }
 
     // Verify all 10 events were persisted in database
-    const eventCount = testDb.db
-      .prepare('SELECT COUNT(*) as count FROM webhook_events WHERE message_id = ?')
-      .get(messageId) as { count: number };
+    const eventCount = await testDb.pool.query(
+      'SELECT COUNT(*) as count FROM webhook_events WHERE message_id = $1',
+      [messageId]
+    );
 
-    assert.equal(Number(eventCount.count), 10);
+    assert.equal(Number(eventCount.rows[0].count), 10);
 
     // Verify message has valid status (DELIVERED or READ) and hasn't regressed
     const msgRes = await request(app).get(`/api/v1/messages/${messageId}`).expect(200);

@@ -1,4 +1,4 @@
-# Multi-stage Dockerfile for Multi-Tenant Messaging Service
+# Multi-stage Dockerfile for Multi-Tenant Messaging Service (PostgreSQL)
 
 # Stage 1: Build & Compile TypeScript
 FROM node:22-bookworm-slim AS builder
@@ -19,7 +19,7 @@ FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV DATABASE_PATH=/app/data/messaging.db
+ENV DATABASE_URL=postgresql://postgres:password@postgres:5432/messaging_db
 
 # Install curl for container health check
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
@@ -31,9 +31,6 @@ RUN npm ci --omit=dev
 # Copy compiled files and migrations
 COPY --from=builder /app/dist ./dist
 COPY migrations/ ./migrations/
-
-# Create directory for persistent SQLite database
-RUN mkdir -p /app/data && chown -R node:node /app
 
 USER node
 

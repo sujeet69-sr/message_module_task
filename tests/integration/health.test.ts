@@ -7,12 +7,12 @@ import { createTestDatabase, TestDbContext } from '../helpers/testDb.js';
 describe('Health and Metrics API Integration Tests', () => {
   let testDb: TestDbContext;
 
-  before(() => {
-    testDb = createTestDatabase();
+  before(async () => {
+    testDb = await createTestDatabase();
   });
 
-  after(() => {
-    testDb.cleanup();
+  after(async () => {
+    await testDb.cleanup();
   });
 
   it('GET /health returns 200 with service health and database connection status', async () => {
@@ -20,7 +20,7 @@ describe('Health and Metrics API Integration Tests', () => {
 
     assert.equal(res.body.status, 'healthy');
     assert.equal(res.body.database.status, 'connected');
-    assert.equal(res.body.database.engine, 'sqlite');
+    assert.equal(res.body.database.engine, 'postgresql');
     assert.ok(typeof res.body.uptime === 'number');
     assert.ok(res.body.timestamp);
   });

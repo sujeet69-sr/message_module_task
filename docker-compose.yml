@@ -1,26 +1,48 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: messaging-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: messaging_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d messaging_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   messaging-api:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: messaging-api
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "3000:3000"
     environment:
       - PORT=3000
       - NODE_ENV=production
-      - DATABASE_PATH=/app/data/messaging.db
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/messaging_db
       - LOG_LEVEL=info
       - WORKER_ENABLED=true
       - WORKER_CONCURRENCY=2
       - WORKER_POLL_INTERVAL_MS=500
       - WORKER_MAX_RETRIES=3
-    volumes:
-      - ./data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 15s
       timeout: 3s
       retries: 3
       start_period: 5s
+
+volumes:
+  postgres_data:

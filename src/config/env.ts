@@ -6,13 +6,11 @@ dotenv.config();
 const EnvSchema = z.object({
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  DATABASE_PATH: z.string().default('./data/messaging.db'),
-  DB_CLIENT: z.enum(['sqlite', 'postgres']).optional(),
   DATABASE_URL: z.string().optional(),
   PGHOST: z.string().default('localhost'),
   PGPORT: z.coerce.number().default(5432),
   PGUSER: z.string().default('postgres'),
-  PGPASSWORD: z.string().optional(),
+  PGPASSWORD: z.string().default('password'),
   PGDATABASE: z.string().default('messaging_db'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   WORKER_ENABLED: z
@@ -43,15 +41,6 @@ export function getEnvConfig(): EnvConfig {
 
   cachedConfig = result.data;
   return cachedConfig;
-}
-
-export function isPostgres(): boolean {
-  const config = getEnvConfig();
-  if (config.DB_CLIENT === 'postgres') return true;
-  if (config.DATABASE_URL && (config.DATABASE_URL.startsWith('postgres://') || config.DATABASE_URL.startsWith('postgresql://'))) {
-    return true;
-  }
-  return false;
 }
 
 export function resetEnvConfig(): void {
